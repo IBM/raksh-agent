@@ -1,42 +1,64 @@
-[![Build Status](https://travis-ci.org/kata-containers/agent.svg?branch=master)](https://travis-ci.org/kata-containers/agent)
-[![codecov](https://codecov.io/gh/kata-containers/agent/branch/master/graph/badge.svg)](https://codecov.io/gh/kata-containers/agent)
-
-# Kata Containers Agent
-
-* [Debug mode](#debug-mode)
-* [Developer mode](#developer-mode)
-* [Enable trace support](#enable-trace-support)
-* [Enable debug console](#enable-debug-console)
-* [`cpuset` cgroup details](#cpuset-cgroup-details)
-
-This project implements an agent called `kata-agent` that runs inside a virtual machine (VM).
+# Raksh Agent
+This is a modified Kata agent to manage all contianers life-cycle operation
+inside the secure virtual machine (SVM) of the `Raksh` Secure Container project.
+For details on Raksh please refer to the details [here](https://github.com/ibm/raksh).
+You'll need to build the agent and the initrd
 
 The agent manages container processes inside the VM, on behalf of the
 [runtime](https://github.com/kata-containers/runtime) running on the host.
 
-## Debug mode
 
-To enable agent debug output, add the `agent.log=debug` option to the guest kernel command line.
+# Build and install Kata Agent (aka Raksh Agent)
 
-See the [developer guide](https://github.com/kata-containers/documentation/blob/master/Developer-Guide.md#enable-full-debug) for further details.
+```
+$ mkdir -p $GOPATH/src/github.com/kata-containers
+$ cd $GOPATH/src/github.com/kata-containers
+$ git clone https://github.com/ibm/raksh-agent.git agent
+$ cd agent 
+$ git checkout -b 1.9.1-raksh-agent origin/1.9.1-raksh-agent 
+$ make && sudo make install
+```
 
-## Developer mode
+## Get the osbuilder
 
-Add `agent.devmode` to the guest kernel command line to allow the agent
-process to coredump (disabled by default). Specifying this option implicitly
-enables [debug mode](#debug-mode).
+```
+$ go get -d -u github.com/kata-containers/osbuilder
+```
 
-## Enable trace support
+# Build and install the image-tools binary
 
-See [the tracing guide](TRACING.md).
+```
+$ go get -d github.com/opencontainers/image-tools/cmd/oci-image-tool
+$ cd $GOPATH/src/github.com/opencontainers/image-tools/ && make all && sudo make install
+```
+> **Note:**
+>
+> - The distro on which you build the binary should match the distro you base your initrd rootfs on
 
-## Enable debug console
 
-Add `agent.debug_console` to the guest kernel command line to
-allow the agent process to start a debug console. Debug console is only available if `bash`
-or `sh` is installed in the rootfs or initrd image. Developers can [connect to the virtual
-machine using the debug console](https://github.com/kata-containers/documentation/blob/master/Developer-Guide.md#connect-to-the-virtual-machine-using-the-debug-console)
+## Create an initrd image
+### Create a local rootfs for initrd image
+```
+$ export ROOTFS_DIR="${GOPATH}/src/github.com/kata-containers/osbuilder/rootfs-builder/rootfs"
+$ sudo rm -rf ${ROOTFS_DIR}
+$ cd $GOPATH/src/github.com/kata-containers/osbuilder/rootfs-builder
+$ script -fec 'sudo -E GOPATH=$GOPATH AGENT_INIT=yes EXTRA_PKGS="skopeo" USE_DOCKER=true SECCOMP=no AGENT_SOURCE_BIN=/usr/bin/kata-agent ./rootfs.sh fedora'
+$ scp /usr/bin/oci-image-tool ${ROOTFS_DIR}/usr/bin/.
+```
 
-## `cpuset` cgroup details
+### Build an initrd image
 
-See the [cpuset cgroup documentation](documentation/features/cpuset.md).
+```
+$ cd $GOPATH/src/github.com/kata-containers/osbuilder/initrd-builder
+$ script -fec 'sudo -E AGENT_INIT=yes USE_DOCKER=true ./initrd_builder.sh ${ROOTFS_DIR}'
+```
+
+### Install the initrd image
+
+```
+$ commit=$(git log --format=%h -1 HEAD)
+$ date=$(date +%Y-%m-%d-%T.%N%z)
+$ image="kata-containers-initrd-${date}-${commit}"
+$ sudo install -o root -g root -m 0640 -D kata-containers-initrd.img "/usr/share/kata-containers/${image}"
+$ (cd /usr/share/kata-containers && sudo ln -sf "$image" kata-containers-initrd.img)
+```

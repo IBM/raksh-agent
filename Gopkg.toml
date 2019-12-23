@@ -1,4 +1,12 @@
 [[constraint]]
+  name = "github.com/opencontainers/image-tools"
+  revision = "93db3b16e6738bf9b8bee47d86ac93be5340838b"
+
+[[constraint]]
+  name = "gopkg.in/yaml.v2"
+  version = "2.2.2"
+
+[[constraint]]
   name = "github.com/gogo/protobuf"
   revision = "4cbf7e384e768b4e01799441fdf2a706a5635ae7"
 

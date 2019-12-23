@@ -24,6 +24,7 @@ import (
 	gpb "github.com/gogo/protobuf/types"
 	"github.com/kata-containers/agent/pkg/types"
 	pb "github.com/kata-containers/agent/protocols/grpc"
+	sc "github.com/kata-containers/agent/securecontainers"
 	"github.com/opencontainers/runc/libcontainer"
 	"github.com/opencontainers/runc/libcontainer/configs"
 	"github.com/opencontainers/runc/libcontainer/seccomp"
@@ -400,6 +401,13 @@ func (a *agentGRPC) execProcess(ctr *container, proc *process, createContainer b
 		return grpcStatus.Error(codes.InvalidArgument, "Process cannot be nil")
 	}
 
+	if createContainer != true {
+		proc.process.Env, proc.process.Cwd, err = sc.UpdateExecProcessConfig(ctr.id, proc.process.Env, proc.process.Cwd)
+		if err != nil {
+			return grpcStatus.Errorf(codes.Internal, "Could not update exec processes env and cwd: %v", err)
+		}
+	}
+
 	// This lock is very important to avoid any race with reaper.reap().
 	// Indeed, if we don't lock this here, we could potentially get the
 	// SIGCHLD signal before the channel has been created, meaning we will
@@ -586,7 +594,6 @@ func (a *agentGRPC) finishCreateContainer(ctr *container, req *pb.CreateContaine
 		return emptyResp, err
 	}
 	ctr.config = *config
-
 	ctr.initProcess, err = buildProcess(req.OCI.Process, req.ExecId, true)
 	if err != nil {
 		return emptyResp, err
@@ -609,7 +616,6 @@ func (a *agentGRPC) CreateContainer(ctx context.Context, req *pb.CreateContainer
 	if err := a.createContainerChecks(req); err != nil {
 		return emptyResp, err
 	}
-
 	// re-scan PCI bus
 	// looking for hidden devices
 	if err = rescanPciBus(); err != nil {
@@ -655,6 +661,19 @@ func (a *agentGRPC) CreateContainer(ctx context.Context, req *pb.CreateContainer
 
 	// Convert the spec to an actual OCI specification structure.
 	ociSpec, err := pb.GRPCtoOCI(req.OCI)
+
+	agentLog.Debug("Check if pause container for container id", req.ContainerId)
+	checkPause := sc.IsPauseContainer(ociSpec.Process.Args)
+
+	if checkPause != true {
+		agentLog.Debug("It is not a pause image. Starting secure container with container id:", req.ContainerId)
+		err = sc.UpdateSecureContainersOCIReq(ociSpec, req)
+		if err != nil {
+			agentLog.WithError(err).Errorf("Error updating secure container OCI request with container id: %s  error: %s", req.ContainerId, err)
+			return emptyResp, err
+		}
+	}
+
 	if err != nil {
 		return emptyResp, err
 	}
@@ -842,6 +861,7 @@ func (a *agentGRPC) updateSharedPidNs(ctr *container) error {
 }
 
 func (a *agentGRPC) StartContainer(ctx context.Context, req *pb.StartContainerRequest) (*gpb.Empty, error) {
+	agentLog.Debug("Starting the container")
 	ctr, err := a.getContainer(req.ContainerId)
 	if err != nil {
 		return emptyResp, err
@@ -855,7 +875,7 @@ func (a *agentGRPC) StartContainer(ctx context.Context, req *pb.StartContainerRe
 	if status != libcontainer.Created {
 		return nil, grpcStatus.Errorf(codes.FailedPrecondition, "Container %s status %s, should be %s", req.ContainerId, status.String(), libcontainer.Created.String())
 	}
-
+	agentLog.Debug("Execing into the container")
 	if err := ctr.container.Exec(); err != nil {
 		return emptyResp, err
 	}

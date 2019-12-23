@@ -8,14 +8,14 @@ package main
 
 import (
 	"fmt"
+	"golang.org/x/sys/unix"
+	"io/ioutil"
 	"net"
 	"os"
 	"reflect"
 	"strings"
 	"sync"
 	"syscall"
-
-	"golang.org/x/sys/unix"
 
 	"github.com/kata-containers/agent/pkg/types"
 	pb "github.com/kata-containers/agent/protocols/grpc"
@@ -617,7 +617,8 @@ func setupDNS(dns []string) (err error) {
 
 	if len(dns) == 0 {
 		agentLog.Debug("Did not set sandbox DNS as DNS not received as part of grpc request.")
-		return nil
+		err := ioutil.WriteFile("/etc/resolv.conf", []byte("nameserver   8.8.8.8"), 0644)
+		return err
 	}
 	if file, err = os.Create(kataGuestSandboxDNSFile); err != nil {
 		return err
