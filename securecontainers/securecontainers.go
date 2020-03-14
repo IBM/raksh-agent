@@ -24,14 +24,19 @@ import (
 )
 
 const (
-	agentName                = "kata-agent"
-	configmapFileName        = "raksh.properties"
-	configmapJSONFileName    = "config.json"
-	rootfsBundleDir          = "rootfs_bundle"
-	kataGuestSharedDir       = "/run/kata-containers/shared/containers"
-	skopeoSrcImageTransport  = "docker://" //Todo: Handle other registries as well
-	skopeoDestImageTransport = "oci:"
-	configmapMountPoint      = "/etc/raksh"
+	agentName                  = "kata-agent"
+	configmapFileName          = "raksh.properties"
+	configmapJSONFileName      = "config.json"
+	rootfsBundleDir            = "rootfs_bundle"
+	kataGuestSharedDir         = "/run/kata-containers/shared/containers"
+	skopeoSrcImageTransport    = "docker://" //Todo: Handle other registries as well
+	skopeoDestImageTransport   = "oci:"
+	configmapMountPoint        = "/etc/raksh"
+	rakshSecretDefMountPoint   = "/etc/raksh-secrets"
+	rakshSecretVMTEEMountPoint = "/run/raksh-secrets"
+	configMapKeyFileName       = "configMapKey"
+	imageKeyFileName           = "imageKey"
+	nonceFileName              = "nonce"
 )
 
 var agentFields = logrus.Fields{
@@ -118,11 +123,12 @@ func UpdateSecureContainersOCIReq(ociSpec *specs.Spec, req *pb.CreateContainerRe
 }
 
 //Read encrypted configmap volume mounted into the scratch image.
-func readEncryptedConfigmap(req *pb.CreateContainerRequest, vaultEnv []string) (*svmConfig, error) {
+func readEncryptedConfigmap(req *pb.CreateContainerRequest, containerEnv []string) (*svmConfig, error) {
 
 	var svmConfig svmConfig
 	var file string
 
+	agentLog.Debug("containerEnv: ", containerEnv)
 	agentLog.Debug("Reading encrypted configmap for container:", req.ContainerId)
 	for _, mounts := range req.OCI.Mounts {
 		if mounts.Destination == configmapMountPoint {
@@ -156,12 +162,13 @@ func readEncryptedConfigmap(req *pb.CreateContainerRequest, vaultEnv []string) (
 		return nil, err
 	}
 
-	key, nonce, err := crypto.GetCMDecryptionKey(vaultEnv)
+	//Ignore imgKey for now
+	configmapKey, _, nonce, err := readSecrets(req)
 	if err != nil {
 		return nil, err
 	}
 
-	decryptedConfig, err := crypto.DecryptSVMConfig(containerspec, key, nonce)
+	decryptedConfig, err := crypto.DecryptSVMConfig(containerspec, configmapKey, nonce)
 	if err != nil {
 		return nil, err
 	}
@@ -180,6 +187,75 @@ func readEncryptedConfigmap(req *pb.CreateContainerRequest, vaultEnv []string) (
 
 	return &svmConfig, err
 
+}
+
+//Read secrets mounted into well-defined path
+func readSecrets(req *pb.CreateContainerRequest) (configMapKey []byte, imageKey []byte, nonce []byte, err error) {
+
+	var configMapKeyFile, nonceFile, imageKeyFile string
+
+	agentLog.Debug("Reading secrets for container: ", req.ContainerId)
+
+	if crypto.IsVMTEE() == true {
+		//VM TEE
+		err = crypto.PopulateSecretsForVMTEE()
+		if err != nil {
+			agentLog.WithError(err).Errorf("Error populating secrets for TEE")
+			return nil, nil, nil, err
+		}
+		configMapKeyFile = filepath.Join(rakshSecretVMTEEMountPoint, configMapKeyFileName)
+		imageKeyFile = filepath.Join(rakshSecretVMTEEMountPoint, imageKeyFileName)
+		nonceFile = filepath.Join(rakshSecretVMTEEMountPoint, nonceFileName)
+		agentLog.Debug("Found secrets at: ", rakshSecretVMTEEMountPoint)
+	} else {
+		//non VM TEE case
+		for _, mounts := range req.OCI.Mounts {
+			if mounts.Destination == rakshSecretDefMountPoint {
+				configMapKeyFile = filepath.Join(mounts.Source, configMapKeyFileName)
+				nonceFile = filepath.Join(mounts.Source, nonceFileName)
+				imageKeyFile = filepath.Join(mounts.Source, imageKeyFileName)
+				agentLog.Debug("Found secrets at: ", mounts.Destination)
+				break
+			}
+		}
+	}
+
+	configMapKey, err = readSecretFile(configMapKeyFile)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	imageKey, err = readSecretFile(imageKeyFile)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	nonce, err = readSecretFile(nonceFile)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	return configMapKey, imageKey, nonce, nil
+}
+
+//Get the secrets from the relevant files
+func readSecretFile(fileName string) ([]byte, error) {
+
+	err := fileExists(fileName)
+	if err != nil {
+		agentLog.WithError(err).Errorf("Error looking for %s", fileName)
+		return nil, err
+	}
+
+	//The secrets are base64 encoded
+	keyEnc, err := ioutil.ReadFile(fileName)
+	if err != nil {
+		agentLog.WithError(err).Errorf("Could not read file %s: %s", fileName, err)
+		return nil, err
+	}
+
+	keyDecoded, err := b64.StdEncoding.DecodeString(string(keyEnc))
+	return keyDecoded, err
 }
 
 func createOCIRuntimeBundle(ociImage string, ociBundle string) error {
