@@ -3,33 +3,48 @@ package crypto
 import (
 	"crypto/aes"
 	"crypto/cipher"
-	"io/ioutil"
+	"os"
+
+	"github.com/sirupsen/logrus"
 )
 
-// GetCMDecryptionKey fetchs the decryption key required for config map
-func GetCMDecryptionKey(vaultEnv []string) (key []byte, nonce []byte, err error) {
-	key, err = fetchVaultKey(vaultEnv)
-	if err != nil {
-		return nil, nil, err
-	}
+const (
+	svmFile              = "/sys/devices/system/cpu/svm"
+	agentName            = "kata-agent"
+	scConfigmapKey       = "SC_CONFIGMAP_KEY"
+	scImageKey           = "SC_IMAGE_KEY"
+	nonceKey             = "SC_NONCE"
+	kataGuestSvmDir      = "/run/svmkeys"
+	rakshSecretsVMTEEDir = "/run/raksh-secrets"
+	configMapKeyFileName = "configMapKey"
+	imageKeyFileName     = "imageKey"
+	nonceFileName        = "nonce"
+)
 
-	if len(key) == 0 {
-		// TODO - add support for specifying the path for symm_key
-		// embedded in initrd via env variables
-		key, err = ioutil.ReadFile("/symm_key")
-		if err != nil {
-			return nil, nil, err
-		}
-	}
+var agentLog = logrus.WithFields(agentFields)
+var agentFields = logrus.Fields{
+	"name":   agentName,
+	"pid":    os.Getpid(),
+	"source": "agent",
+}
 
-	// TODO - add support for specifying the path for nonce
-	// embedded in initrd via env variables
-	nonce, err = ioutil.ReadFile("/nonce")
-	if err != nil {
-		return nil, nil, err
+//Returns true if VM TEE (SEV/PEF/MKTME)
+func IsVMTEE() bool {
+	if isSVM() == true {
+		return true
 	}
+	//ToDo support for SEV and MKTME
+	return false
+}
 
-	return key, nonce, nil
+//Get Secrets from VM TEE
+func PopulateSecretsForVMTEE() error {
+
+	if isSVM() == true {
+		err := populateSecretsForSVM()
+		return err
+	}
+	return nil
 }
 
 // DecryptSVMConfig decrypts the config map
